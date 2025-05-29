@@ -1,26 +1,17 @@
-from flask import Flask, request
-from telegram import Update, Bot
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 import os
 import dotenv
 import google.generativeai as genai
-import nest_asyncio
-import asyncio
 import random
 import re
+from telegram import Update
+from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
 
-# Load environment variables
 dotenv.load_dotenv('.env')
 
-app = Flask(__name__)
-
-# Configure Gemini API
-genai.configure(api_key=os.getenv('GEMINI_API_KEY'))
-model = genai.GenerativeModel('gemini-1.5-flash')
-
 TOKEN = os.getenv('TELEGRAM_TOKEN')
-bot = Bot(token=TOKEN)
-application = Application.builder().token(TOKEN).build()
+GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
+genai.configure(api_key=GEMINI_API_KEY)
+model = genai.GenerativeModel('gemini-1.5-flash')
 
 EMOJI_POOL = ["😊", "😉", "❤️", "😏", "🌸", "😂", "🥰", "✨", "🤔", "🙃", "😇", "😜", "😌"]
 
@@ -95,13 +86,10 @@ def build_prompt(user_id, user_message):
     return prompt, mood
 
 def split_message_parts(text):
-    # Prefer delimiter
     if '|||' in text:
         return [part.strip() for part in text.split('|||') if part.strip()]
-    # Fallback: split on ? ! . when followed by space and capital/emoji
     pattern = r'([?!\.])\s+(?=[A-Z0-9😃-🙏])'
     parts = re.split(pattern, text)
-    # Recombine punctuation with previous part
     result = []
     i = 0
     while i < len(parts):
@@ -111,7 +99,6 @@ def split_message_parts(text):
         else:
             result.append(parts[i].strip())
             i += 1
-    # Only split if 2-3 meaningful chunks
     filtered = [p for p in result if len(p) > 2]
     if 2 <= len(filtered) <= 3:
         return filtered
@@ -166,32 +153,25 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     history.append(f"User: {user_message}")
     history.append(f"Ananya: {' '.join(final_parts)}")
     user_history[user_id] = history[-4:]
-    # Send each part as a separate message with typing simulation
     for i, part in enumerate(final_parts):
         if i > 0:
+            import asyncio
             await asyncio.sleep(random.uniform(0.8, 1.6))
-        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+        await update.message.chat.send_action("typing")
         delay = min(max(len(part) * 0.04, 0.7), 2.2)
+        import asyncio
         await asyncio.sleep(delay)
         await update.message.reply_text(part[:100])
 
-# Register handlers
-application.add_handler(CommandHandler('start', start))
-application.add_handler(CommandHandler('setname', setname))
-application.add_handler(CommandHandler('clear', clear))
-application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
-
-# Webhook endpoint for Telegram
-@app.route(f'/{TOKEN}', methods=['POST'])
-def webhook():
-    update = Update.de_json(request.get_json(force=True), bot)
-    asyncio.run(application.process_update(update))
-    return 'OK'
-
-# Health check endpoint
-@app.route('/')
-def index():
-    return 'Bot is running!'
-
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
+    application = Application.builder().token(TOKEN).build()
+    application.add_handler(CommandHandler('start', start))
+    application.add_handler(CommandHandler('setname', setname))
+    application.add_handler(CommandHandler('clear', clear))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
+    application.run_webhook(
+        listen="0.0.0.0",
+        port=int(os.environ.get("PORT", 5000)),
+        url_path=TOKEN,
+        webhook_url=f"https://ananya-cpdb.onrender.com>/{TOKEN}"
+    )
