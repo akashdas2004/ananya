@@ -1,20 +1,26 @@
+from flask import Flask, request
+from telegram import Update, Bot
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 import os
 import dotenv
+import google.generativeai as genai
 import nest_asyncio
 import asyncio
-import re
-from telegram import Update
-from telegram.ext import Application, MessageHandler, CommandHandler, ContextTypes, filters
-import google.generativeai as genai
 import random
+import re
 
-# Apply Colab event loop fix
-nest_asyncio.apply()
+# Load environment variables
 dotenv.load_dotenv('.env')
 
+app = Flask(__name__)
+
 # Configure Gemini API
-genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+genai.configure(api_key=os.getenv('GEMINI_API_KEY'))
 model = genai.GenerativeModel('gemini-1.5-flash')
+
+TOKEN = os.getenv('TELEGRAM_TOKEN')
+bot = Bot(token=TOKEN)
+application = Application.builder().token(TOKEN).build()
 
 EMOJI_POOL = ["😊", "😉", "❤️", "😏", "🌸", "😂", "🥰", "✨", "🤔", "🙃", "😇", "😜", "😌"]
 
@@ -111,55 +117,8 @@ def split_message_parts(text):
         return filtered
     return [text.strip()]
 
-async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-    user_message = update.message.text
-    prompt, mood = build_prompt(user_id, user_message)
-    response = model.generate_content(
-        prompt,
-        generation_config=genai.types.GenerationConfig(
-            temperature=0.98,
-            top_p=0.85,
-            max_output_tokens=60,
-            stop_sequences=["\n"]
-        )
-    )
-    reply = response.text.strip().split("\n")[0]
-
-    # Smart splitting
-    message_parts = split_message_parts(reply)
-
-    last_emojis = []
-    history = user_history.get(user_id, [])
-    if history:
-        last_reply = history[-1] if history[-1].startswith("Ananya:") else ""
-        last_emojis = [e for e in EMOJI_POOL if e in last_reply]
-
-    # Randomize emoji for each part, but skip sometimes for realism
-    final_parts = []
-    for i, part in enumerate(message_parts):
-        if random.random() < 0.8:
-            part_with_emoji, used_emojis = randomize_emoji(part, mood, last_emojis)
-            final_parts.append(part_with_emoji)
-        else:
-            final_parts.append(part)
-
-    # Update user history
-    history.append(f"User: {user_message}")
-    history.append(f"Ananya: {' '.join(final_parts)}")
-    user_history[user_id] = history[-4:]
-
-    # Send each part as a separate message with typing simulation
-    for i, part in enumerate(final_parts):
-        if i > 0:
-            await asyncio.sleep(random.uniform(0.8, 1.6))  # Small random delay between split messages
-        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
-        delay = min(max(len(part) * 0.04, 0.7), 2.2)
-        await asyncio.sleep(delay)
-        await update.message.reply_text(part[:100])
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Hey! Main Ananya hoon, asli Dilli wali. 😉 Tum kese ho ?")
+    await update.message.reply_text("Hey! Main Ananya hoon, asli Dilli wali. Thoda attitude, thoda pyaar. Impress kar ke dikhao! 😉")
 
 async def setname(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
@@ -177,11 +136,62 @@ async def clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_history.pop(update.message.from_user.id, None)
     await update.message.reply_text("Sab bhool gayi! Naye se shuru karein?")
 
-if __name__ == "__main__":
-    app = Application.builder().token(os.getenv("TELEGRAM_TOKEN")).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("setname", setname))
-    app.add_handler(CommandHandler("clear", clear))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
-    print("Ananya (Dilli wali) is live with robust message splitting!")
-    app.run_polling()
+async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    user_message = update.message.text
+    prompt, mood = build_prompt(user_id, user_message)
+    response = model.generate_content(
+        prompt,
+        generation_config=genai.types.GenerationConfig(
+            temperature=0.98,
+            top_p=0.85,
+            max_output_tokens=60,
+            stop_sequences=["\n"]
+        )
+    )
+    reply = response.text.strip().split("\n")[0]
+    message_parts = split_message_parts(reply)
+    last_emojis = []
+    history = user_history.get(user_id, [])
+    if history:
+        last_reply = history[-1] if history[-1].startswith("Ananya:") else ""
+        last_emojis = [e for e in EMOJI_POOL if e in last_reply]
+    final_parts = []
+    for i, part in enumerate(message_parts):
+        if random.random() < 0.8:
+            part_with_emoji, used_emojis = randomize_emoji(part, mood, last_emojis)
+            final_parts.append(part_with_emoji)
+        else:
+            final_parts.append(part)
+    history.append(f"User: {user_message}")
+    history.append(f"Ananya: {' '.join(final_parts)}")
+    user_history[user_id] = history[-4:]
+    # Send each part as a separate message with typing simulation
+    for i, part in enumerate(final_parts):
+        if i > 0:
+            await asyncio.sleep(random.uniform(0.8, 1.6))
+        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+        delay = min(max(len(part) * 0.04, 0.7), 2.2)
+        await asyncio.sleep(delay)
+        await update.message.reply_text(part[:100])
+
+# Register handlers
+application.add_handler(CommandHandler('start', start))
+application.add_handler(CommandHandler('setname', setname))
+application.add_handler(CommandHandler('clear', clear))
+application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
+
+# Webhook endpoint for Telegram
+@app.route(f'/{TOKEN}', methods=['POST'])
+def webhook():
+    update = Update.de_json(request.get_json(force=True), bot)
+    asyncio.run(application.process_update(update))
+    return 'OK'
+
+# Health check endpoint
+@app.route('/')
+def index():
+    return 'Bot is running!'
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
